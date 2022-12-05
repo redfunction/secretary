@@ -35,7 +35,8 @@ from mimetypes import guess_type, guess_extension
 from uuid import uuid4
 from xml.dom.minidom import parseString
 from xml.parsers.expat import ExpatError, ErrorString
-from jinja2 import Environment, Undefined, Markup
+from jinja2 import Environment, Undefined
+from markupsafe import Markup
 
 PY2 = sys.version_info < (3, 0)
 
@@ -141,14 +142,14 @@ class Renderer(object):
             self.environment.filters['pad'] = pad_string
             self.environment.filters['markdown'] = self.markdown_filter
             self.environment.filters['image'] = self.image_filter
-            self.environment.globals['SafeValue'] = jinja2.Markup
+            self.environment.globals['SafeValue'] = Markup
 
         self.media_path = kwargs.pop('media_path', '')
         self.media_callback = self.fs_loader
 
         self._compile_tags_expressions()
 
-    @jinja2.evalcontextfilter
+    @jinja2.pass_environment
     def finalize_value(self, value, *args):
         """Escapes variables values."""
         if isinstance(value, Markup):
@@ -776,22 +777,6 @@ class Renderer(object):
                     if (tag=='li' and html_node.childNodes[0].localName != 'p'):
                         container = xml_object.createElement('text:p')
                         odt_node.appendChild(container)
-                    elif tag=='code':
-                        def traverse_preformated(node):
-                            if node.hasChildNodes():
-                                for n in node.childNodes:
-                                    traverse_preformated(n)
-                            else:
-                                container = xml_object.createElement('text:span')
-                                for text in re.split('(\n)', node.nodeValue.lstrip('\n')):
-                                    if text == '\n':
-                                        container.appendChild(xml_object.createElement('text:line-break'))
-                                    else:
-                                        container.appendChild(xml_object.createTextNode(text))
-
-                                node.parentNode.replaceChild(container, node)
-                        traverse_preformated(html_node)
-                        container = odt_node
                     else:
                         container = odt_node
 
@@ -830,7 +815,19 @@ class Renderer(object):
                 html_node.parentNode.replaceChild(odt_node, html_node)
 
         def node_to_string(node):
-            return node.toxml()
+            result = node.toxml()
+
+            # linebreaks in preformated nodes should be converted to <text:line-break/>
+            if (node.__class__.__name__ != 'Text') and \
+                (node.getAttribute('text:style-name') == 'Preformatted_20_Text'):
+                result = result.replace('\n', '<text:line-break/>')
+
+            # All double linebreak should be replaced with an empty paragraph
+            # and all linebreaks should be converted to <text:line-break/>
+            return (result
+                    .replace('\n\n', '<text:p text:style-name="Standard"/>')
+                    .replace('\n', '<text:line-break/>'))
+
 
         ODTText = ''.join(node_as_str for node_as_str in map(node_to_string,
                 xml_object.getElementsByTagName('html')[0].childNodes))
